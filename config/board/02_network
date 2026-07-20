@@ -1,0 +1,49 @@
+#!/bin/sh
+#
+# Copyright (c) 2021 AmadeusGhost
+# Adapted for iStoreOS (no WiFi)
+#
+
+. /lib/functions/uci-defaults.sh
+. /lib/functions/system.sh
+
+ipq60xx_setup_interfaces()
+{
+	local board="$1"
+
+	case "$board" in
+	zn,m2)
+		ucidef_set_interfaces_lan_wan "eth1 eth2 eth3" "eth0"
+		;;
+	*)
+		echo "Unsupported hardware. Network interfaces not initialized"
+		;;
+	esac
+}
+
+ipq60xx_setup_macs()
+{
+	local board="$1"
+
+	case "$board" in
+	zn,m2)
+		local wan_mac=$(mtd_get_mac_ascii ART 0x4)
+		if [ -n "$wan_mac" ]; then
+			local lan_mac=$(macaddr_add "$wan_mac" 1)
+			ucidef_set_interface_macaddr "wan" "$wan_mac"
+			ucidef_set_interface_macaddr "lan" "$lan_mac"
+		fi
+		;;
+	esac
+
+	[ -n "$lan_mac" ] && ucidef_set_interface_macaddr "lan" $lan_mac
+	[ -n "$wan_mac" ] && ucidef_set_interface_macaddr "wan" $wan_mac
+}
+
+board_config_update
+board=$(board_name)
+ipq60xx_setup_interfaces $board
+ipq60xx_setup_macs $board
+board_config_flush
+
+exit 0
