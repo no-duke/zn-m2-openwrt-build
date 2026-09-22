@@ -28,4 +28,13 @@ sed -i -r "s#navbar_proxy = 'openclash'#navbar_proxy = 'passwall'#g" feeds/luci/
 # 增大 rootfs 分区给 OpenClash 腾空间
 sed -i '/define Device\/zn_m2/,/^endef$/ {
   /DEVICE_PACKAGES := .*kmod-usb-phy-msm/a\\tROOTFS_PARTSIZE := 20M
-}' openwrt/target/linux/ipq60xx/image/Makefile 2>/dev/null || true
+}' target/linux/ipq60xx/image/Makefile 2>/dev/null || true
+
+# --- 诊断：确认 rootfs 分区调整是否生效 ---
+if [ -f target/linux/ipq60xx/image/Makefile ]; then
+    echo "=== ipq60xx Makefile 中的 zn_m2 定义 ==="
+    sed -n '/define Device\/zn_m2/,/^endef$/p' target/linux/ipq60xx/image/Makefile
+else
+    echo "!! target/linux/ipq60xx/image/Makefile 不存在，尝试定位实际路径"
+    find target -name 'Makefile' -path '*image*' 2>/dev/null | head -10
+fi
