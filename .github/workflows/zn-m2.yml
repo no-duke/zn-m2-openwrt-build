@@ -1,0 +1,188 @@
+#
+# https://github.com/P3TERX/Actions-OpenWrt
+#
+# File: .github/workflows/zn-m2.yml
+# Description: Build OpenWrt ZN-M2 firmware (basic + gecoosac-v2) using GitHub Actions
+#
+# Copyright (c) 2019-2024 P3TERX <https://p3terx.com>
+#
+# This is free software, licensed under the MIT License.
+# See /LICENSE for more information.
+#
+
+name: zn-m2 build
+
+on:
+  schedule:
+    - cron: '23 19 * * *'   # Daily at 03:23 CST
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  REPO_URL: https://github.com/openwrt-fork/sdf8057-ipq6000.git
+  REPO_BRANCH: master
+  FEEDS_CONF: feeds.conf.default
+  CONFIG_FILE: ./config/zn-m2.config
+  DIY_P1_SH: ./scripts/zn-m2/diy-part1.sh
+  DIY_P2_SH: ./scripts/zn-m2/diy-part2.sh
+  DIY_P3_SH: ./scripts/zn-m2/diy-part3.sh
+  TZ: Asia/Shanghai
+
+jobs:
+  # Gate for schedule trigger: only build if upstream Passwall has new version
+  check:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-22.04
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      latest_pkg_sha: ${{ steps.check.outputs.latest_pkg_sha }}
+    steps:
+    - uses: actions/checkout@v7
+
+    - uses: actions/cache/restore@v6
+      with:
+        path: /tmp/passwall-cache
+        key: passwall-packages-sha
+        restore-keys: passwall-packages-sha
+
+    - name: Check upstream updates
+      id: check
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bash .github/scripts/zn-m2/check-upstream.sh
+
+  build:
+    needs: check
+    if: |
+      always() &&
+      (github.event_name == 'workflow_dispatch' || needs.check.outputs.should_build == 'true')
+    runs-on: ubuntu-22.04
+
+    steps:
+
+    - name: Checkout
+      uses: actions/checkout@v7
+
+    - name: Setup build environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: bash .github/scripts/zn-m2/setup-env.sh
+
+    - name: Clone source code
+      working-directory: /workdir
+      run: |
+        git clone $REPO_URL -b $REPO_BRANCH openwrt
+        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+
+    - name: Load custom feeds
+      run: |
+        [ -e "$FEEDS_CONF" ] && mv "$FEEDS_CONF" openwrt/feeds.conf.default
+        cd openwrt
+        bash "$GITHUB_WORKSPACE/$DIY_P1_SH"
+
+    - name: Update feeds
+      run: cd openwrt && ./scripts/feeds update -a
+
+    - name: Modify feeds
+      run: |
+        cd openwrt
+        bash "$GITHUB_WORKSPACE/$DIY_P2_SH"
+
+    - name: Install feeds
+      run: cd openwrt && ./scripts/feeds install -a
+
+    - name: Load custom configuration
+      run: |
+        [ -e files ] && mv files openwrt/files
+        [ -e "$CONFIG_FILE" ] && cp "$CONFIG_FILE" openwrt/.config
+        cd openwrt
+        bash "$GITHUB_WORKSPACE/$DIY_P3_SH"
+        cp .config /tmp/zn-m2-full.config
+
+    - name: Download packages
+      run: |
+        cd openwrt
+        make defconfig
+        make download -j8
+        find dl -size -1024c -exec rm -f {} \;
+
+    # ============================================================
+    # Build 1: BASIC (without gecoosac)
+    # ============================================================
+    - name: Build BASIC firmware
+      run: |
+        cd openwrt
+        sed -i '/gecoosac/d' .config
+        make defconfig
+        echo "$(nproc) thread compile (basic)"
+        make -j$(nproc) || make -j1 V=s
+
+    - name: Save BASIC firmware
+      run: |
+        cd openwrt/bin/targets/*/*
+        rm -rf packages
+        mkdir -p /tmp/firmware-basic
+        cp -a . /tmp/firmware-basic/
+
+    # ============================================================
+    # Build 2: GECOSAC-V2 (with gecoosac, incremental)
+    # ============================================================
+    - name: Build GECOSAC firmware (incremental)
+      run: |
+        cd openwrt
+        cp /tmp/zn-m2-full.config .config
+        make defconfig
+        echo "$(nproc) thread compile (gecoosac-v2, incremental)"
+        make -j$(nproc) || make -j1 V=s
+
+    # ============================================================
+    # Organize & Publish
+    # ============================================================
+    - name: Organize firmware files
+      run: bash .github/scripts/zn-m2/organize-firmware.sh
+
+    - name: Generate release info
+      id: tag
+      run: bash .github/scripts/zn-m2/generate-release.sh
+
+    - name: Upload firmware to release
+      uses: softprops/action-gh-release@v3
+      if: success()
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      with:
+        name: ${{ steps.tag.outputs.release_name }}
+        tag_name: ${{ steps.tag.outputs.release_tag }}
+        body_path: release.txt
+        files: /tmp/release-firmware/*
+
+    - name: Save packages SHA cache
+      if: success()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        LATEST_SHA=$(gh api repos/Openwrt-Passwall/openwrt-passwall-packages/commits/main --jq .sha)
+        mkdir -p /tmp/passwall-cache
+        echo "$LATEST_SHA" > /tmp/passwall-cache/packages-sha
+        echo "CACHE_KEY=passwall-packages-sha-$LATEST_SHA" >> $GITHUB_ENV
+
+    - uses: actions/cache/save@v6
+      if: success()
+      with:
+        path: /tmp/passwall-cache
+        key: ${{ env.CACHE_KEY }}
+
+    - name: Delete old workflows runs
+      if: success()
+      uses: ophub/delete-releases-workflows@v0.1.0
+      with:
+        delete_workflows: true
+        workflows_keep_day: 3
+        gh_token: ${{ github.token }}
