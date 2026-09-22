@@ -28,4 +28,4 @@ sed -i -r "s#navbar_proxy = 'openclash'#navbar_proxy = 'passwall'#g" feeds/luci/
 # 增大 rootfs 分区给 OpenClash 腾空间
 sed -i '/define Device\/zn_m2/,/^endef$/ {
   /DEVICE_PACKAGES := .*kmod-usb-phy-msm/a\\tROOTFS_PARTSIZE := 20M
-}' openwrt/target/linux/ipq60xx/image/Makefile 2>/dev/null || true
+}' target/linux/ipq60xx/image/Makefile 2>/dev/null || true
