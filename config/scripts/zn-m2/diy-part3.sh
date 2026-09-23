@@ -29,3 +29,57 @@ sed -i -r "s#navbar_proxy = 'openclash'#navbar_proxy = 'passwall'#g" feeds/luci/
 sed -i '/define Device\/zn_m2/,/^endef$/ {
   /DEVICE_PACKAGES := .*kmod-usb-phy-msm/a\\tROOTFS_PARTSIZE := 20M
 }' target/linux/ipq60xx/image/Makefile 2>/dev/null || true
+
+
+# ============================================================================
+# 内核配置修复：NEW 选项导致 silentoldconfig abort
+# ----------------------------------------------------------------------------
+# 报错原文：
+#   Qualcomm Atheros IPQ806X AHCI SATA support (AHCI_IPQ) [N/m/?] (NEW) aborted!
+#   Console input/output is redirected. Run 'make oldconfig' to update configuration.
+#   make[7]: *** [scripts/kconfig/Makefile:38: silentoldconfig] Error 1
+#
+# 原因：内核 Kconfig 新增了选项，但 target/linux/ipq60xx/config-4.4 未声明，
+#       CI 里 stdin 被重定向，silentoldconfig 无法交互应答 → 直接中止编译。
+#
+# 双保险：
+#   保险 A —— 显式声明该选项为 not set（IPQ806X 的 SATA 控制器，IPQ6000 用不到）
+#   保险 B —— 把构建系统里的 silentoldconfig 换成 oldconfig，
+#             后者遇到 NEW 选项会取默认值而不是 abort
+# ============================================================================
+
+echo ""
+echo "=== 内核配置修复 ==="
+
+# ---- 保险 A：显式声明缺失的内核选项 ----
+KCFG="target/linux/ipq60xx/config-4.4"
+if [ -f "$KCFG" ]; then
+    for sym in AHCI_IPQ; do
+        if grep -q "CONFIG_${sym}\b" "$KCFG"; then
+            echo "  [A] 已存在 CONFIG_${sym}"
+        else
+            echo "# CONFIG_${sym} is not set" >> "$KCFG"
+            echo "  [A] 已补充 CONFIG_${sym}=n"
+        fi
+    done
+else
+    echo "  [A] !! 未找到 $KCFG"
+fi
+
+# ---- 保险 B：silentoldconfig -> oldconfig ----
+# oldconfig 在 stdin 为 EOF 时对 NEW 选项取默认值；silentoldconfig 会直接失败
+PATCHED=0
+for f in $(grep -rl 'silentoldconfig' include/ scripts/ 2>/dev/null || true); do
+    sed -i 's/\bsilentoldconfig\b/oldconfig/g' "$f"
+    echo "  [B] 已修补 $f"
+    PATCHED=$((PATCHED + 1))
+done
+if [ "$PATCHED" -eq 0 ]; then
+    echo "  [B] 未发现 silentoldconfig 调用点，跳过"
+fi
+
+# ---- 验证 ----
+echo "  --- config-4.4 尾部 ---"
+tail -4 "$KCFG" 2>/dev/null || true
+echo "  --- 剩余 silentoldconfig 引用 ---"
+grep -rn 'silentoldconfig' include/ 2>/dev/null | head -5 || echo "  (无)"
