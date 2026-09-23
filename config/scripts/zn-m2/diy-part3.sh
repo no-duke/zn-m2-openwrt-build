@@ -66,17 +66,16 @@ else
     echo "  [A] !! 未找到 $KCFG"
 fi
 
-# ---- 保险 B：silentoldconfig -> oldconfig ----
-# oldconfig 在 stdin 为 EOF 时对 NEW 选项取默认值；silentoldconfig 会直接失败
-PATCHED=0
-for f in $(grep -rl 'silentoldconfig' include/ scripts/ 2>/dev/null || true); do
-    sed -i 's/\bsilentoldconfig\b/oldconfig/g' "$f"
-    echo "  [B] 已修补 $f"
-    PATCHED=$((PATCHED + 1))
-done
-if [ "$PATCHED" -eq 0 ]; then
-    echo "  [B] 未发现 silentoldconfig 调用点，跳过"
-fi
+# ---- 保险 B：已移除（2026-09-23）----
+# 曾把 include/ 与 scripts/ 下所有 silentoldconfig 替换为 oldconfig，
+# 企图让 NEW 选项自动取默认值。结果 OpenWrt 顶层 scripts/config/conf.c
+# 正是 kconfig 工具自身源码，替换后工具编不出来，报：
+#   make -s -C scripts/config conf CC=cc: build failed
+#   make: *** [include/toplevel.mk:116: scripts/config/conf] Error 1
+# 把更早的 Download packages 步骤直接打挂，已回退。
+#
+# 实测编译日志显示：SATA_AHCI / SATA_AHCI_PLATFORM 等均已决定（[N/m/?] n），
+# 只有 AHCI_IPQ 被标记 (NEW) —— 说明保险 A 的显式声明已足够覆盖。
 
 # ---- 验证 ----
 echo "  --- config-4.4 尾部 ---"
